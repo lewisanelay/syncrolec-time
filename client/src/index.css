@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* SYNCROLEC brand — dark navy surfaces, electric green accent */
+    --background: 222 28% 9%;
+    --foreground: 210 20% 92%;
+    --card: 222 26% 12%;
+    --card-foreground: 210 20% 92%;
+    --popover: 222 26% 12%;
+    --popover-foreground: 210 20% 92%;
+    --primary: 152 70% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 22% 18%;
+    --secondary-foreground: 210 15% 80%;
+    --muted: 222 22% 16%;
+    --muted-foreground: 210 12% 55%;
+    --accent: 152 70% 40%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 4 80% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 222 18% 20%;
+    --input: 222 22% 16%;
+    --ring: 152 70% 40%;
+    --radius: 0.5rem;
+    --chart-1: 152 70% 40%;
+    --chart-2: 188 75% 50%;
+    --chart-3: 42 90% 55%;
+    --chart-4: 200 75% 55%;
+    --chart-5: 280 65% 60%;
+  }
+
+  .dark {
+    --background: 222 28% 9%;
+    --foreground: 210 20% 92%;
+    --card: 222 26% 12%;
+    --card-foreground: 210 20% 92%;
+    --popover: 222 26% 12%;
+    --popover-foreground: 210 20% 92%;
+    --primary: 152 70% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 22% 18%;
+    --secondary-foreground: 210 15% 80%;
+    --muted: 222 22% 16%;
+    --muted-foreground: 210 12% 55%;
+    --accent: 152 70% 40%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 4 80% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 222 18% 20%;
+    --input: 222 22% 16%;
+    --ring: 152 70% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'General Sans', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* PIN pad button style */
+.pin-btn {
+  @apply flex items-center justify-center w-20 h-20 rounded-2xl text-2xl font-semibold
+         bg-secondary border border-border text-foreground
+         hover:bg-accent hover:text-accent-foreground active:scale-95
+         transition-all duration-150 select-none cursor-pointer;
+}
+
+.pin-btn:active {
+  transform: scale(0.93);
+}
+
+/* Clock pulse animation */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { box-shadow: 0 0 0 12px rgba(34, 197, 94, 0); }
+}
+
+.clocked-in-pulse {
+  animation: pulse-green 2s ease-in-out infinite;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
