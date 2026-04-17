@@ -1,233 +1,260 @@
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
-import { eq, desc, and, gte, lte, isNull } from "drizzle-orm";
+import { createClient } from "@libsql/client";
 import {
-  employees, clockEvents, shifts,
   type Employee, type ClockEvent, type Shift,
   type InsertEmployee, type InsertClockEvent, type InsertShift,
   type EmployeeWithStatus, type ShiftWithEmployee,
 } from "@shared/schema";
 
-const sqlite = new Database("sqlite.db");
-const db = drizzle(sqlite);
+const db = createClient({ url: "file:sqlite.db" });
 
-// Create tables
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    pin TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'employee',
-    hourly_rate REAL NOT NULL DEFAULT 10.60,
-    overtime_threshold REAL NOT NULL DEFAULT 8,
-    overtime_multiplier REAL NOT NULL DEFAULT 1.5,
-    weekly_overtime_threshold REAL NOT NULL DEFAULT 40,
-    is_active INTEGER NOT NULL DEFAULT 1
-  );
+// ── Bootstrap tables ──────────────────────────────────────────────────────────
+async function init() {
+  await db.executeMultiple(`
+    CREATE TABLE IF NOT EXISTS employees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      pin TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'employee',
+      hourly_rate REAL NOT NULL DEFAULT 10.60,
+      overtime_threshold REAL NOT NULL DEFAULT 8,
+      overtime_multiplier REAL NOT NULL DEFAULT 1.5,
+      weekly_overtime_threshold REAL NOT NULL DEFAULT 40,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
 
-  CREATE TABLE IF NOT EXISTS clock_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    employee_id INTEGER NOT NULL REFERENCES employees(id),
-    type TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    note TEXT
-  );
+    CREATE TABLE IF NOT EXISTS clock_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      type TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      note TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS shifts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    employee_id INTEGER NOT NULL REFERENCES employees(id),
-    clock_in_time TEXT NOT NULL,
-    clock_out_time TEXT,
-    regular_hours REAL,
-    overtime_hours REAL,
-    total_pay REAL,
-    date TEXT NOT NULL,
-    note TEXT
-  );
-`);
+    CREATE TABLE IF NOT EXISTS shifts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id INTEGER NOT NULL REFERENCES employees(id),
+      clock_in_time TEXT NOT NULL,
+      clock_out_time TEXT,
+      regular_hours REAL,
+      overtime_hours REAL,
+      total_pay REAL,
+      date TEXT NOT NULL,
+      note TEXT
+    );
+  `);
 
-// Seed default data if empty
-const empCount = db.select().from(employees).all();
-if (empCount.length === 0) {
-  db.insert(employees).values([
-    {
-      name: "Mark (Manager)",
-      pin: "1234",
-      role: "manager",
-      hourlyRate: 20.00,
-      overtimeThreshold: 8,
-      overtimeMultiplier: 1.5,
-      weeklyOvertimeThreshold: 40,
-      isActive: true,
-    },
-    {
-      name: "Lewis",
-      pin: "5678",
-      role: "employee",
-      hourlyRate: 10.60,
-      overtimeThreshold: 8,
-      overtimeMultiplier: 1.5,
-      weeklyOvertimeThreshold: 40,
-      isActive: true,
-    },
-  ]).run();
+  // Seed default employees if none exist
+  const { rows } = await db.execute("SELECT COUNT(*) as cnt FROM employees");
+  if ((rows[0] as any).cnt === 0) {
+    await db.executeMultiple(`
+      INSERT INTO employees (name, pin, role, hourly_rate, overtime_threshold, overtime_multiplier, weekly_overtime_threshold, is_active)
+      VALUES ('Mark (Manager)', '1234', 'manager', 20.00, 8, 1.5, 40, 1);
+      INSERT INTO employees (name, pin, role, hourly_rate, overtime_threshold, overtime_multiplier, weekly_overtime_threshold, is_active)
+      VALUES ('Lewis', '5678', 'employee', 10.60, 8, 1.5, 40, 1);
+    `);
+  }
 }
 
+// Run init synchronously-ish by storing the promise; routes await it
+export const ready = init();
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function rowToEmployee(r: any): Employee {
+  return {
+    id: r.id,
+    name: r.name,
+    pin: r.pin,
+    role: r.role,
+    hourlyRate: r.hourly_rate,
+    overtimeThreshold: r.overtime_threshold,
+    overtimeMultiplier: r.overtime_multiplier,
+    weeklyOvertimeThreshold: r.weekly_overtime_threshold,
+    isActive: r.is_active === 1,
+  };
+}
+
+function rowToShift(r: any): Shift {
+  return {
+    id: r.id,
+    employeeId: r.employee_id,
+    clockInTime: r.clock_in_time,
+    clockOutTime: r.clock_out_time ?? null,
+    regularHours: r.regular_hours ?? null,
+    overtimeHours: r.overtime_hours ?? null,
+    totalPay: r.total_pay ?? null,
+    date: r.date,
+    note: r.note ?? null,
+  };
+}
+
+// ── Interface ─────────────────────────────────────────────────────────────────
 export interface IStorage {
-  // Employees
-  getEmployees(): Employee[];
-  getEmployee(id: number): Employee | undefined;
-  getEmployeeByPin(pin: string): Employee | undefined;
-  createEmployee(data: InsertEmployee): Employee;
-  updateEmployee(id: number, data: Partial<InsertEmployee>): Employee | undefined;
+  getEmployees(): Promise<Employee[]>;
+  getEmployee(id: number): Promise<Employee | undefined>;
+  getEmployeeByPin(pin: string): Promise<Employee | undefined>;
+  createEmployee(data: InsertEmployee): Promise<Employee>;
+  updateEmployee(id: number, data: Partial<InsertEmployee>): Promise<Employee | undefined>;
 
-  // Shifts
-  getShifts(employeeId?: number, startDate?: string, endDate?: string): ShiftWithEmployee[];
-  getActiveShift(employeeId: number): Shift | undefined;
-  createShift(data: InsertShift): Shift;
-  closeShift(id: number, clockOutTime: string, regularHours: number, overtimeHours: number, totalPay: number): Shift | undefined;
-  updateShift(id: number, data: Partial<InsertShift>): Shift | undefined;
-  deleteShift(id: number): void;
+  getShifts(employeeId?: number, startDate?: string, endDate?: string): Promise<ShiftWithEmployee[]>;
+  getActiveShift(employeeId: number): Promise<Shift | undefined>;
+  createShift(data: InsertShift): Promise<Shift>;
+  closeShift(id: number, clockOutTime: string, regularHours: number, overtimeHours: number, totalPay: number): Promise<Shift | undefined>;
+  updateShift(id: number, data: Partial<InsertShift>): Promise<Shift | undefined>;
+  deleteShift(id: number): Promise<void>;
 
-  // Clock events
-  getClockEvents(employeeId?: number): ClockEvent[];
-  createClockEvent(data: InsertClockEvent): ClockEvent;
+  getClockEvents(employeeId?: number): Promise<ClockEvent[]>;
+  createClockEvent(data: InsertClockEvent): Promise<ClockEvent>;
 
-  // Dashboard
-  getEmployeesWithStatus(): EmployeeWithStatus[];
-  getWeeklyHours(employeeId: number, weekStart: string): number;
+  getEmployeesWithStatus(): Promise<EmployeeWithStatus[]>;
+  getWeeklyHours(employeeId: number, weekStart: string): Promise<number>;
 }
 
 export const storage: IStorage = {
-  getEmployees() {
-    return db.select().from(employees).where(eq(employees.isActive, true)).all();
+  async getEmployees() {
+    const { rows } = await db.execute("SELECT * FROM employees WHERE is_active = 1");
+    return rows.map(rowToEmployee);
   },
 
-  getEmployee(id) {
-    return db.select().from(employees).where(eq(employees.id, id)).get();
+  async getEmployee(id) {
+    const { rows } = await db.execute({ sql: "SELECT * FROM employees WHERE id = ?", args: [id] });
+    return rows[0] ? rowToEmployee(rows[0]) : undefined;
   },
 
-  getEmployeeByPin(pin) {
-    return db.select().from(employees)
-      .where(and(eq(employees.pin, pin), eq(employees.isActive, true)))
-      .get();
+  async getEmployeeByPin(pin) {
+    const { rows } = await db.execute({ sql: "SELECT * FROM employees WHERE pin = ? AND is_active = 1", args: [pin] });
+    return rows[0] ? rowToEmployee(rows[0]) : undefined;
   },
 
-  createEmployee(data) {
-    return db.insert(employees).values(data).returning().get();
+  async createEmployee(data) {
+    const { lastInsertRowid } = await db.execute({
+      sql: `INSERT INTO employees (name, pin, role, hourly_rate, overtime_threshold, overtime_multiplier, weekly_overtime_threshold, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [data.name, data.pin, data.role ?? "employee", data.hourlyRate ?? 10.60,
+             data.overtimeThreshold ?? 8, data.overtimeMultiplier ?? 1.5,
+             data.weeklyOvertimeThreshold ?? 40, data.isActive === false ? 0 : 1],
+    });
+    return (await this.getEmployee(Number(lastInsertRowid)))!;
   },
 
-  updateEmployee(id, data) {
-    return db.update(employees).set(data).where(eq(employees.id, id)).returning().get();
+  async updateEmployee(id, data) {
+    const fields: string[] = [];
+    const args: any[] = [];
+    if (data.name !== undefined) { fields.push("name = ?"); args.push(data.name); }
+    if (data.pin !== undefined) { fields.push("pin = ?"); args.push(data.pin); }
+    if (data.role !== undefined) { fields.push("role = ?"); args.push(data.role); }
+    if (data.hourlyRate !== undefined) { fields.push("hourly_rate = ?"); args.push(data.hourlyRate); }
+    if (data.overtimeThreshold !== undefined) { fields.push("overtime_threshold = ?"); args.push(data.overtimeThreshold); }
+    if (data.overtimeMultiplier !== undefined) { fields.push("overtime_multiplier = ?"); args.push(data.overtimeMultiplier); }
+    if (data.weeklyOvertimeThreshold !== undefined) { fields.push("weekly_overtime_threshold = ?"); args.push(data.weeklyOvertimeThreshold); }
+    if (data.isActive !== undefined) { fields.push("is_active = ?"); args.push(data.isActive ? 1 : 0); }
+    if (fields.length === 0) return this.getEmployee(id);
+    args.push(id);
+    await db.execute({ sql: `UPDATE employees SET ${fields.join(", ")} WHERE id = ?`, args });
+    return this.getEmployee(id);
   },
 
-  getShifts(employeeId, startDate, endDate) {
-    const allEmployees = db.select().from(employees).all();
-    let query = db.select().from(shifts);
-    let results: Shift[];
-
-    if (employeeId && startDate && endDate) {
-      results = db.select().from(shifts)
-        .where(and(eq(shifts.employeeId, employeeId), gte(shifts.date, startDate), lte(shifts.date, endDate)))
-        .orderBy(desc(shifts.clockInTime))
-        .all();
-    } else if (employeeId) {
-      results = db.select().from(shifts)
-        .where(eq(shifts.employeeId, employeeId))
-        .orderBy(desc(shifts.clockInTime))
-        .all();
-    } else if (startDate && endDate) {
-      results = db.select().from(shifts)
-        .where(and(gte(shifts.date, startDate), lte(shifts.date, endDate)))
-        .orderBy(desc(shifts.clockInTime))
-        .all();
-    } else {
-      results = db.select().from(shifts).orderBy(desc(shifts.clockInTime)).all();
-    }
-
-    return results.map(shift => ({
-      ...shift,
-      employee: allEmployees.find(e => e.id === shift.employeeId)!,
+  async getShifts(employeeId, startDate, endDate) {
+    let sql = "SELECT * FROM shifts WHERE 1=1";
+    const args: any[] = [];
+    if (employeeId) { sql += " AND employee_id = ?"; args.push(employeeId); }
+    if (startDate) { sql += " AND date >= ?"; args.push(startDate); }
+    if (endDate) { sql += " AND date <= ?"; args.push(endDate); }
+    sql += " ORDER BY clock_in_time DESC";
+    const { rows: shiftRows } = await db.execute({ sql, args });
+    const { rows: empRows } = await db.execute("SELECT * FROM employees");
+    const emps = empRows.map(rowToEmployee);
+    return shiftRows.map(r => ({
+      ...rowToShift(r),
+      employee: emps.find(e => e.id === (r as any).employee_id)!,
     }));
   },
 
-  getActiveShift(employeeId) {
-    return sqlite.prepare('SELECT * FROM shifts WHERE employee_id = ? AND clock_out_time IS NULL').get(employeeId) as any;
-  },
-
-  createShift(data) {
-    return db.insert(shifts).values(data).returning().get();
-  },
-
-  closeShift(id, clockOutTime, regularHours, overtimeHours, totalPay) {
-    return db.update(shifts)
-      .set({ clockOutTime, regularHours, overtimeHours, totalPay })
-      .where(eq(shifts.id, id))
-      .returning()
-      .get();
-  },
-
-  updateShift(id, data) {
-    return db.update(shifts).set(data).where(eq(shifts.id, id)).returning().get();
-  },
-
-  deleteShift(id) {
-    db.delete(shifts).where(eq(shifts.id, id)).run();
-  },
-
-  getClockEvents(employeeId) {
-    if (employeeId) {
-      return db.select().from(clockEvents).where(eq(clockEvents.employeeId, employeeId)).orderBy(desc(clockEvents.timestamp)).all();
-    }
-    return db.select().from(clockEvents).orderBy(desc(clockEvents.timestamp)).all();
-  },
-
-  createClockEvent(data) {
-    return db.insert(clockEvents).values(data).returning().get();
-  },
-
-  getEmployeesWithStatus() {
-    const allEmployees = db.select().from(employees).where(eq(employees.isActive, true)).all();
-    const today = new Date().toISOString().split('T')[0];
-
-    return allEmployees.map(emp => {
-      const activeShift = sqlite.prepare('SELECT * FROM shifts WHERE employee_id = ? AND clock_out_time IS NULL').get(emp.id) as any;
-
-      const todayShifts = db.select().from(shifts)
-        .where(and(eq(shifts.employeeId, emp.id), eq(shifts.date, today)))
-        .all();
-
-      const todayHours = todayShifts.reduce((sum, s) => {
-        if (s.clockOutTime) {
-          return sum + (s.regularHours || 0) + (s.overtimeHours || 0);
-        }
-        // Currently clocked in — add elapsed time
-        const elapsed = (Date.now() - new Date(s.clockInTime).getTime()) / 3600000;
-        return sum + elapsed;
-      }, 0);
-
-      return {
-        ...emp,
-        currentlyClocked: !!activeShift,
-        lastClockIn: activeShift?.clock_in_time ?? activeShift?.clockInTime,
-        todayHours,
-      };
+  async getActiveShift(employeeId) {
+    const { rows } = await db.execute({
+      sql: "SELECT * FROM shifts WHERE employee_id = ? AND clock_out_time IS NULL LIMIT 1",
+      args: [employeeId],
     });
+    return rows[0] ? rowToShift(rows[0]) : undefined;
   },
 
-  getWeeklyHours(employeeId, weekStart) {
+  async createShift(data) {
+    const { lastInsertRowid } = await db.execute({
+      sql: "INSERT INTO shifts (employee_id, clock_in_time, date) VALUES (?, ?, ?)",
+      args: [data.employeeId, data.clockInTime, data.date],
+    });
+    const { rows } = await db.execute({ sql: "SELECT * FROM shifts WHERE id = ?", args: [Number(lastInsertRowid)] });
+    return rowToShift(rows[0]);
+  },
+
+  async closeShift(id, clockOutTime, regularHours, overtimeHours, totalPay) {
+    await db.execute({
+      sql: "UPDATE shifts SET clock_out_time = ?, regular_hours = ?, overtime_hours = ?, total_pay = ? WHERE id = ?",
+      args: [clockOutTime, regularHours, overtimeHours, totalPay, id],
+    });
+    const { rows } = await db.execute({ sql: "SELECT * FROM shifts WHERE id = ?", args: [id] });
+    return rows[0] ? rowToShift(rows[0]) : undefined;
+  },
+
+  async updateShift(id, data) {
+    const fields: string[] = [];
+    const args: any[] = [];
+    if (data.clockInTime !== undefined) { fields.push("clock_in_time = ?"); args.push(data.clockInTime); }
+    if (data.clockOutTime !== undefined) { fields.push("clock_out_time = ?"); args.push(data.clockOutTime); }
+    if (data.regularHours !== undefined) { fields.push("regular_hours = ?"); args.push(data.regularHours); }
+    if (data.overtimeHours !== undefined) { fields.push("overtime_hours = ?"); args.push(data.overtimeHours); }
+    if (data.totalPay !== undefined) { fields.push("total_pay = ?"); args.push(data.totalPay); }
+    if (fields.length === 0) return undefined;
+    args.push(id);
+    await db.execute({ sql: `UPDATE shifts SET ${fields.join(", ")} WHERE id = ?`, args });
+    const { rows } = await db.execute({ sql: "SELECT * FROM shifts WHERE id = ?", args: [id] });
+    return rows[0] ? rowToShift(rows[0]) : undefined;
+  },
+
+  async deleteShift(id) {
+    await db.execute({ sql: "DELETE FROM shifts WHERE id = ?", args: [id] });
+  },
+
+  async getClockEvents(employeeId) {
+    if (employeeId) {
+      const { rows } = await db.execute({ sql: "SELECT * FROM clock_events WHERE employee_id = ? ORDER BY timestamp DESC", args: [employeeId] });
+      return rows.map((r: any) => ({ id: r.id, employeeId: r.employee_id, type: r.type, timestamp: r.timestamp, note: r.note }));
+    }
+    const { rows } = await db.execute("SELECT * FROM clock_events ORDER BY timestamp DESC");
+    return rows.map((r: any) => ({ id: r.id, employeeId: r.employee_id, type: r.type, timestamp: r.timestamp, note: r.note }));
+  },
+
+  async createClockEvent(data) {
+    const { lastInsertRowid } = await db.execute({
+      sql: "INSERT INTO clock_events (employee_id, type, timestamp, note) VALUES (?, ?, ?, ?)",
+      args: [data.employeeId, data.type, data.timestamp, data.note ?? null],
+    });
+    return { id: Number(lastInsertRowid), employeeId: data.employeeId, type: data.type, timestamp: data.timestamp, note: data.note ?? null };
+  },
+
+  async getEmployeesWithStatus() {
+    const emps = await this.getEmployees();
+    const today = new Date().toISOString().split("T")[0];
+    return Promise.all(emps.map(async emp => {
+      const activeShift = await this.getActiveShift(emp.id);
+      const { rows } = await db.execute({
+        sql: "SELECT * FROM shifts WHERE employee_id = ? AND date = ?",
+        args: [emp.id, today],
+      });
+      const todayHours = rows.reduce((sum, s: any) => {
+        if (s.clock_out_time) return sum + (s.regular_hours || 0) + (s.overtime_hours || 0);
+        return sum + (Date.now() - new Date(s.clock_in_time).getTime()) / 3600000;
+      }, 0);
+      return { ...emp, currentlyClocked: !!activeShift, lastClockIn: activeShift?.clockInTime, todayHours };
+    }));
+  },
+
+  async getWeeklyHours(employeeId, weekStart) {
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekEnd.getDate() + 6);
-    const weekEndStr = weekEnd.toISOString().split('T')[0];
-
-    const weekShifts = db.select().from(shifts)
-      .where(and(
-        eq(shifts.employeeId, employeeId),
-        gte(shifts.date, weekStart),
-        lte(shifts.date, weekEndStr)
-      ))
-      .all();
-
-    return weekShifts.reduce((sum, s) => sum + (s.regularHours || 0) + (s.overtimeHours || 0), 0);
+    const { rows } = await db.execute({
+      sql: "SELECT * FROM shifts WHERE employee_id = ? AND date >= ? AND date <= ?",
+      args: [employeeId, weekStart, weekEnd.toISOString().split("T")[0]],
+    });
+    return rows.reduce((sum, s: any) => sum + (s.regular_hours || 0) + (s.overtime_hours || 0), 0);
   },
 };
